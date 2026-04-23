@@ -1,7 +1,12 @@
+-- server/server.lua
 local Tunnel = module("vrp","lib/Tunnel")
 local Proxy = module("vrp","lib/Proxy")
 vRP = Proxy.getInterface("vRP")
 vRPclient = Tunnel.getInterface("vRP")
+
+-- Importar funções de compatibilidade
+local Framework = GetFramework()
+local Inventory = GetInventory()
 
 -- Criar a interface para o client
 src = {}
@@ -10,12 +15,13 @@ vSERVER = Tunnel.getInterface("vrp_craft")
 
 -- Tabelas globais
 local craftingItem = {}
-local policePermission = "policia.permision"
+local policePermission = Config.Permissions[Config.Framework].policePermission
 local logWebhook = "https://discord.com/api/webhooks/1195352561356656671/M3KO_6fud2VrgB7JRjhIf9OEXyeDGcOzX0ydtaU4C6bJyTKP8lqBEX5zAgOg_zc5Rjjy"
+local adminPermission = Config.Permissions[Config.Framework].adminPermission
 
--- Preparar queries SQL
-vRP.prepare('sjr/setItens', 'REPLACE INTO sjr_farmsystem(user_id, itens, day) VALUES(@user_id, @itens, @day)')
-vRP.prepare('sjr/getItens', 'SELECT * from sjr_farmsystem WHERE user_id = @user_id')
+-- Preparar queries SQL (usando Framework)
+Framework.prepare('sjr/setItens', 'REPLACE INTO sjr_farmsystem(user_id, itens, day) VALUES(@user_id, @itens, @day)')
+Framework.prepare('sjr/getItens', 'SELECT * from sjr_farmsystem WHERE user_id = @user_id')
 
 -- Funções auxiliares locais
 local function notifyPlayer(source, type, message)
@@ -30,13 +36,13 @@ local function notifyPlayer(source, type, message)
 end
 
 local function sendLog(message)
-    vRP.sendLog(logWebhook, message)
+    Framework.sendLog(logWebhook, message)
 end
 
 local function alertPolice(coords, title, description)
-    local police = vRP.getUsersByPermission(policePermission) 
+    local police = Framework.getUsersByPermission(policePermission)
     for _,v in pairs(police) do
-        local nsource = vRP.getUserSource(parseInt(v))
+        local nsource = Framework.getUserSource(parseInt(v))
         if nsource then
             TriggerClientEvent("NotifyPush", nsource, {
                 x = coords.x, y = coords.y, z = coords.z,
@@ -47,14 +53,42 @@ local function alertPolice(coords, title, description)
     end
 end
 
+-- Função para verificar permissão com compatibilidade de framework
+local function checkFrameworkPermission(user_id, permission)
+    if not permission then return true end
+    if Config.Framework == 'vrp' then
+        return Framework.hasPermission(user_id, permission)
+    elseif Config.Framework == 'qbcore' then
+        local src = Framework.getUserSource(user_id)
+        return Framework.hasPermission(src, permission)
+    elseif Config.Framework == 'esx' then
+        local src = Framework.getUserSource(user_id)
+        return Framework.hasPermission(src, permission)
+    end
+    return true
+end
+
+-- Função para verificar permissão da bancada
+local function checkTablePermission(source, permission)
+    if not permission then return true end
+    if Config.Framework == 'vrp' then
+        local user_id = Framework.getUserId(source)
+        return user_id and Framework.hasPermission(user_id, permission)
+    elseif Config.Framework == 'qbcore' then
+        return Framework.hasPermission(source, permission)
+    elseif Config.Framework == 'esx' then
+        return Framework.hasPermission(source, permission)
+    end
+    return true
+end
+
 -- Funções principais
 src.checkPerm = function(perm)
     local source = source
     if not perm then
-        return true  -- Sem permissão definida = acesso liberado
+        return true
     end
-    local user_id = vRP.getUserId(source)
-    return user_id and vRP.hasPermission(user_id, perm)
+    return checkTablePermission(source, perm)
 end
 
 src.getStorage = function(data)
@@ -63,7 +97,7 @@ src.getStorage = function(data)
         return {} 
     end
     
-    local storage = vRP.getSData('Storage:'..data.name)
+    local storage = Framework.getSData('Storage:'..data.name)
     if not storage then 
         return {} 
     end
@@ -85,7 +119,7 @@ end
 
 src.storageItem = function(data, type, id)
     local source = source
-    local user_id = vRP.getUserId(source)
+    local user_id = Framework.getUserId(source)
     if not user_id then 
         notifyPlayer(source, 'negado', "Usuário não encontrado.")
         return false 
@@ -98,31 +132,31 @@ src.storageItem = function(data, type, id)
     end
 
     local storageName = info.locations[id].requireStorage.name
-    local datatable = vRP.getSData('Storage:'..storageName)
+    local datatable = Framework.getSData('Storage:'..storageName)
     local storage = json.decode(datatable) or {}
-    local amount = vRP.getInventoryItemAmount(user_id, data.name)
+    local amount = Inventory.getAmount(user_id, data.name)
 
     if amount <= 0 then
         notifyPlayer(source, 'negado', "Você não possui esse item para depositar.")
         return false
     end
     
-    if not vRP.tryGetInventoryItem(user_id, data.name, amount) then
+    if not Inventory.removeItem(user_id, data.name, amount) then
         notifyPlayer(source, 'negado', "Erro ao retirar item do inventário.")
         return false
     end
 
     -- Atualizar armazenamento
     storage[data.name] = (storage[data.name] or 0) + amount
-    vRP.setSData('Storage:'..storageName, json.encode(storage))
+    Framework.setSData('Storage:'..storageName, json.encode(storage))
 
     -- Atualizar banco de dados
-    local query = vRP.query('sjr/getItens', { user_id = user_id })
+    local query = Framework.query('sjr/getItens', { user_id = tostring(user_id) })
     local temp = os.date("*t", os.time())
     local value = #query > 0 and json.decode(query[1].itens) or {}
     
     value[data.name] = (value[data.name] or 0) + amount
-    vRP.execute('sjr/setItens', { user_id = user_id, itens = json.encode(value), day = temp.day })
+    Framework.execute('sjr/setItens', { user_id = tostring(user_id), itens = json.encode(value), day = temp.day })
 
     -- Log e notificação
     sendLog("O ID "..user_id.." depositou o item: "..data.name.." na quantidade de "..amount)
@@ -132,7 +166,7 @@ end
 
 src.startCrafting = function(data, qtd, type, id)
     local source = source
-    local user_id = vRP.getUserId(source)
+    local user_id = Framework.getUserId(source)
     if not user_id then 
         notifyPlayer(source, 'negado', "Usuário não encontrado.")
         return false 
@@ -151,7 +185,7 @@ src.startCrafting = function(data, qtd, type, id)
     end
 
     -- Verificar permissão (apenas se craftPermission existir)
-    if info.locations[id].craftPermission and not vRP.hasPermission(user_id, info.locations[id].craftPermission) then
+    if info.locations[id].craftPermission and not checkFrameworkPermission(user_id, info.locations[id].craftPermission) then
         notifyPlayer(source, 'negado', "Você não tem permissão para craftar.")
         return false
     end
@@ -169,7 +203,7 @@ src.startCrafting = function(data, qtd, type, id)
     end
     
     local storageName = info.locations[id].requireStorage.name
-    local datatable = vRP.getSData('Storage:'..storageName)
+    local datatable = Framework.getSData('Storage:'..storageName)
     local storage = json.decode(datatable) or {}
     local hasEnoughItems = true
     local removed = {}
@@ -193,7 +227,7 @@ src.startCrafting = function(data, qtd, type, id)
     for item, amount in pairs(removed) do
         storage[item] = storage[item] - amount
     end
-    vRP.setSData('Storage:'..storageName, json.encode(storage))
+    Framework.setSData('Storage:'..storageName, json.encode(storage))
 
     -- Iniciar processo de craft
     if not craftingItem[user_id] then
@@ -207,7 +241,8 @@ src.startCrafting = function(data, qtd, type, id)
         id = id,
         itens = removed,
         itemName = data.name,
-        startTime = os.time()
+        startTime = os.time(),
+        itemTime = craftData.itemTime
     }
 
     -- Log do craft
@@ -218,7 +253,7 @@ end
 
 src.producedItem = function(data)
     local source = source
-    local user_id = vRP.getUserId(source)
+    local user_id = Framework.getUserId(source)
     if not user_id then 
         notifyPlayer(source, 'negado', "Usuário não encontrado.")
         return false 
@@ -231,11 +266,24 @@ src.producedItem = function(data)
 
     local craftData = craftingItem[user_id][data.name]
     
-    -- Verificar se o tempo já passou (opcional, pode remover se quiser)
-    -- local elapsedTime = os.time() - craftData.startTime
-    -- local requiredTime = -- você precisa armazenar o itemTime
+    -- Verificar tempo de craft (opcional)
+    local elapsedTime = os.time() - craftData.startTime
+    if elapsedTime < craftData.itemTime then
+        notifyPlayer(source, 'negado', "Aguarde "..(craftData.itemTime - elapsedTime).." segundos para finalizar o craft.")
+        return false
+    end
     
-    vRP.giveInventoryItem(user_id, data.name, craftData.amount)
+    -- Verificar peso do inventário antes de dar o item
+    local itemWeight = Inventory.getItemWeight(data.name) * craftData.amount
+    local currentWeight = Inventory.getWeight(user_id)
+    local maxWeight = Inventory.getMaxWeight(user_id)
+    
+    if currentWeight + itemWeight > maxWeight then
+        notifyPlayer(source, 'negado', "Seu inventário está cheio!")
+        return false
+    end
+    
+    Inventory.addItem(user_id, data.name, craftData.amount)
     
     -- Log do item recebido
     sendLog("O ID "..user_id.." recebeu o item craftado: "..data.name.." (Quantidade: "..craftData.amount..")")
@@ -247,7 +295,7 @@ end
 
 src.storageItemAll = function(type, id)
     local source = source
-    local user_id = vRP.getUserId(source)
+    local user_id = Framework.getUserId(source)
     if not user_id then 
         notifyPlayer(source, 'negado', "Usuário não encontrado.")
         return false 
@@ -265,17 +313,17 @@ src.storageItemAll = function(type, id)
         return false
     end
 
-    local datatable = vRP.getSData('Storage:'..storageName)
+    local datatable = Framework.getSData('Storage:'..storageName)
     local storage = json.decode(datatable) or {}
-    local query = vRP.query('sjr/getItens', { user_id = user_id })
+    local query = Framework.query('sjr/getItens', { user_id = tostring(user_id) })
     local temp = os.date("*t", os.time())
     local value = #query > 0 and json.decode(query[1].itens) or {}
     local deposited = false
 
     -- Processar todos os itens do armazém
     for item, _ in pairs(Config.Storages[storageName].itens) do
-        local amount = vRP.getInventoryItemAmount(user_id, item)
-        if amount > 0 and vRP.tryGetInventoryItem(user_id, item, amount) then
+        local amount = Inventory.getAmount(user_id, item)
+        if amount > 0 and Inventory.removeItem(user_id, item, amount) then
             storage[item] = (storage[item] or 0) + amount
             value[item] = (value[item] or 0) + amount
             deposited = true
@@ -286,8 +334,8 @@ src.storageItemAll = function(type, id)
     end
 
     if deposited then
-        vRP.setSData('Storage:'..storageName, json.encode(storage))
-        vRP.execute('sjr/setItens', { user_id = user_id, itens = json.encode(value), day = temp.day })
+        Framework.setSData('Storage:'..storageName, json.encode(storage))
+        Framework.execute('sjr/setItens', { user_id = tostring(user_id), itens = json.encode(value), day = temp.day })
         notifyPlayer(source, 'sucesso', "Itens guardados com sucesso.")
         return true
     end
@@ -296,7 +344,7 @@ src.storageItemAll = function(type, id)
     return false
 end
 
--- Evento para limpar crafts quando o jogador sai
+-- Evento para limpar crafts quando o jogador sai (VRP)
 AddEventHandler('vRP:playerLeave', function(user_id, source)
     if not user_id or not craftingItem[user_id] then return end
 
@@ -304,42 +352,90 @@ AddEventHandler('vRP:playerLeave', function(user_id, source)
         local info = Config.Tables[craftData.type]
         if info and info.locations and info.locations[craftData.id] and info.locations[craftData.id].requireStorage then
             local storageName = info.locations[craftData.id].requireStorage.name
-            local datatable = vRP.getSData('Storage:'..storageName)
+            local datatable = Framework.getSData('Storage:'..storageName)
             local storage = json.decode(datatable) or {}
 
             for item, amount in pairs(craftData.itens) do
                 storage[item] = (storage[item] or 0) + amount
             end
 
-            vRP.setSData('Storage:'..storageName, json.encode(storage))
+            Framework.setSData('Storage:'..storageName, json.encode(storage))
             sendLog("O ID "..user_id.." saiu e teve o craft cancelado, itens devolvidos ao armazém.")
         end
         craftingItem[user_id][itemName] = nil
     end
 end)
 
+-- Evento para QBCore quando jogador sai
+RegisterNetEvent('QBCore:Server:PlayerUnload', function(source)
+    local src = source or tonumber(source)
+    if not src then return end
+    local user_id = Framework.getUserId(src)
+    if user_id and craftingItem[user_id] then
+        for itemName, craftData in pairs(craftingItem[user_id]) do
+            local info = Config.Tables[craftData.type]
+            if info and info.locations and info.locations[craftData.id] and info.locations[craftData.id].requireStorage then
+                local storageName = info.locations[craftData.id].requireStorage.name
+                local datatable = Framework.getSData('Storage:'..storageName)
+                local storage = json.decode(datatable) or {}
+                for item, amount in pairs(craftData.itens) do
+                    storage[item] = (storage[item] or 0) + amount
+                end
+                Framework.setSData('Storage:'..storageName, json.encode(storage))
+                sendLog("O ID "..user_id.." saiu e teve o craft cancelado, itens devolvidos ao armazém.")
+            end
+            craftingItem[user_id][itemName] = nil
+        end
+    end
+end)
+
+-- Evento para ESX quando jogador sai
+RegisterNetEvent('esx:playerDropped', function()
+    local source = source
+    local user_id = Framework.getUserId(source)
+    if user_id and craftingItem[user_id] then
+        for itemName, craftData in pairs(craftingItem[user_id]) do
+            local info = Config.Tables[craftData.type]
+            if info and info.locations and info.locations[craftData.id] and info.locations[craftData.id].requireStorage then
+                local storageName = info.locations[craftData.id].requireStorage.name
+                local datatable = Framework.getSData('Storage:'..storageName)
+                local storage = json.decode(datatable) or {}
+                for item, amount in pairs(craftData.itens) do
+                    storage[item] = (storage[item] or 0) + amount
+                end
+                Framework.setSData('Storage:'..storageName, json.encode(storage))
+                sendLog("O ID "..user_id.." saiu e teve o craft cancelado, itens devolvidos ao armazém.")
+            end
+            craftingItem[user_id][itemName] = nil
+        end
+    end
+end)
+
 -- Funções para o sistema de rota
 src.giveItem = function(data)
     local source = source
-    local user_id = vRP.getUserId(source)
+    local user_id = Framework.getUserId(source)
     if not user_id then return false end
 
     local changed = false
     for _,v in pairs(data.parts) do
         local random = math.random(v.qtdMin, v.qtdMax)
         
-        local policiais = vRP.getUsersByPermission("policia.permissao")
+        -- Verificar quantidade de policiais
+        local policiais = Framework.getUsersByPermission(policePermission)
+        local policiaisCount = 0
+        for _ in pairs(policiais) do policiaisCount = policiaisCount + 1 end
 
-        if #policiais > 5 then
+        if policiaisCount > 5 then
             random = random * 3
-        elseif #policiais > 1 then
+        elseif policiaisCount > 1 then
             random = random * 2
         end
 
         -- Verificar espaço no inventário
-        local itemWeight = vRP.getItemWeight(v.name) * random
-        if vRP.getInventoryWeight(user_id) + itemWeight <= vRP.getInventoryMaxWeight(user_id) then
-            vRP.giveInventoryItem(user_id, v.name, random)
+        local itemWeight = Inventory.getItemWeight(v.name) * random
+        if Inventory.getWeight(user_id) + itemWeight <= Inventory.getMaxWeight(user_id) then
+            Inventory.addItem(user_id, v.name, random)
             changed = true
         else
             notifyPlayer(source, "negado", "Mochila cheia para o item "..v.name)
@@ -358,16 +454,16 @@ end
 
 src.sellItem = function(data)
     local source = source
-    local user_id = vRP.getUserId(source)
+    local user_id = Framework.getUserId(source)
     if not user_id then return false end
 
     local changed = false
     for _,v in pairs(data.parts) do
         local random = math.random(v.qtdMin, v.qtdMax)
         
-        if vRP.tryGetInventoryItem(user_id, v.name, random) then
+        if Inventory.removeItem(user_id, v.name, random) then
             local paymentType = v.type == 'legal' and 'dinheiro' or Config.dirtymoney
-            vRP.giveInventoryItem(user_id, paymentType, v.payment)
+            Inventory.addItem(user_id, paymentType, v.payment)
             changed = true
             notifyPlayer(source, "sucesso", "Você vendeu "..random.."x "..v.name.." por R$"..v.payment)
         else
@@ -387,8 +483,22 @@ end
 
 -- Comando para recarregar configuração (admin)
 RegisterCommand('reloadcraft', function(source, args, rawCommand)
-    local user_id = vRP.getUserId(source)
-    if user_id and vRP.hasPermission(user_id, "admin.permissao") then
+    local user_id = Framework.getUserId(source)
+    if not user_id then 
+        notifyPlayer(source, 'negado', "Usuário não encontrado.")
+        return 
+    end
+    
+    local hasAdmin = false
+    if Config.Framework == 'vrp' then
+        hasAdmin = Framework.hasPermission(user_id, adminPermission)
+    elseif Config.Framework == 'qbcore' then
+        hasAdmin = Framework.hasPermission(source, adminPermission)
+    elseif Config.Framework == 'esx' then
+        hasAdmin = Framework.hasPermission(source, adminPermission)
+    end
+    
+    if hasAdmin then
         local success = pcall(function()
             Config = nil
             Citizen.Wait(100)
@@ -404,4 +514,4 @@ RegisterCommand('reloadcraft', function(source, args, rawCommand)
     end
 end, false)
 
-print('[CRAFT] Server iniciado com sucesso!')
+print('[CRAFT] Server iniciado com sucesso! Framework: ' .. Config.Framework .. ' | Inventário: ' .. Config.Inventory)

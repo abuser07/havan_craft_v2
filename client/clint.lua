@@ -1,3 +1,4 @@
+-- client/client.lua
 local Tunnel = module("vrp","lib/Tunnel")
 local Proxy = module("vrp","lib/Proxy")
 vRP = Proxy.getInterface("vRP")
@@ -30,6 +31,28 @@ local function notify(message, msgType)
         duration = 5000,
         position = 'top-right'
     })
+end
+
+-- Função para parar animação (compatível com VRP)
+local function stopAnimation()
+    if vRP and vRP.stopAnim then
+        vRP.stopAnim(true)
+    else
+        ClearPedTasks(PlayerPedId())
+    end
+end
+
+-- Função para tocar animação (compatível com VRP)
+local function playAnimation(animDict, animName, flags)
+    if vRP and vRP._playAnim then
+        vRP._playAnim(false, {{animDict, animName}}, false)
+    else
+        RequestAnimDict(animDict)
+        while not HasAnimDictLoaded(animDict) do
+            Wait(0)
+        end
+        TaskPlayAnim(PlayerPedId(), animDict, animName, 8.0, -8.0, -1, flags or 1, 0, false, false, false)
+    end
 end
 
 formatCollect = function(table)
@@ -186,7 +209,6 @@ CreateThread(function()
                         distance = 2.0,
                         onSelect = function()
                             if not in_rota then
-                                -- Função de coleta será implementada
                                 notify('Sistema de coleta em desenvolvimento.', 'info')
                             end
                         end
@@ -265,7 +287,8 @@ RegisterNUICallback('startCrafting', function(data, cb)
         else
             segundos = segundos + data.item.timer
         end
-        ExecuteCommand('e mexer')
+        -- Tocar animação (compatível)
+        playAnimation('anim@amb@clubhouse@tutorial@bkr_tut_ig3@', 'machinic_loop_mechandplayer', 1)
         FreezeEntityPosition(PlayerPedId(), true)
         notify('Iniciando craft de '..data.item.name..', aguarde '..data.item.timer..' segundos...', 'info')
     else
@@ -300,7 +323,7 @@ CreateThread(function()
     while true do
         if segundos > 0 then
             if segundos == 1 then
-                vRP.stopAnim(true)
+                stopAnimation()
                 FreezeEntityPosition(PlayerPedId(), false)
                 notify('Craft finalizado! Clique em "Produzir Item" para retirar.', 'success')
             end
@@ -350,7 +373,7 @@ CreateThread(function()
                         
                         if direction == 'delivery' then
                             if vSERVER.sellItem(itemRoute) then
-                                vRP._playAnim(false, {{"pickup_object","pickup_low"}}, false)
+                                playAnimation('pickup_object', 'pickup_low', 1)
                                 itemNumRoute = itemNumRoute + 1
                                 if itemNumRoute > #routeIndexed then
                                     itemNumRoute = 1
@@ -360,7 +383,7 @@ CreateThread(function()
                             end
                         else
                             if vSERVER.giveItem(itemRoute) then
-                                vRP._playAnim(false, {{"pickup_object","pickup_low"}}, false)
+                                playAnimation('pickup_object', 'pickup_low', 1)
                                 itemNumRoute = itemNumRoute + 1
                                 if itemNumRoute > #routeIndexed then
                                     itemNumRoute = 1
@@ -480,4 +503,13 @@ RegisterCommand('testtarget', function()
     notify('Zona de teste criada na sua localização!', 'info')
 end, false)
 
-print('[CRAFT] Client iniciado com sucesso!')
+-- Evento para escutar notificações do servidor (se necessário)
+RegisterNetEvent('vrp_craft:notify')
+AddEventHandler('vrp_craft:notify', function(type, message)
+    notify(message, type)
+end)
+
+-- Inicialização
+CreateThread(function()
+    print('[CRAFT] Client iniciado com sucesso! Framework: ' .. Config.Framework)
+end)
